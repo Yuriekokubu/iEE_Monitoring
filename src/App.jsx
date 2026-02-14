@@ -114,7 +114,7 @@ function App() {
 		};
 
 		try {
-			const response = await axios.post("http://localhost:5000/api/meter-status", payload);
+			const response = await axios.post("http://localhost:5000/api/meter-exceptions", payload);
 			setData(response.data);
 		} catch (err) {
 			if (!isAutoRefresh) setError("โหลดข้อมูลสถานะมิเตอร์ไม่สำเร็จ");
