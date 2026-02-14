@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import Papa from "papaparse";
+import API_URL, { API_ENDPOINTS } from './config/api';
 import { Search, Loader2, CheckCircle2, AlertCircle, Database, FileSpreadsheet, List, ChevronRight, RefreshCw, BarChart3, Copy, Check, Clock, Activity, Zap, TrendingUp } from "lucide-react";
 
 function App() {
@@ -69,7 +70,7 @@ function App() {
 	const fetchBillingDates = async () => {
 		try {
 			setLoadingDates(true);
-			const res = await axios.get("http://localhost:5000/api/billing-dates");
+			const res = await axios.get(API_ENDPOINTS.billingDates);
 			setBillingList(res.data);
 		} catch (err) {
 			setError("ไม่สามารถดึงรายการ Billing Dates ได้");
@@ -114,7 +115,7 @@ function App() {
 		};
 
 		try {
-			const response = await axios.post("http://localhost:5000/api/meter-exceptions", payload);
+			const response = await axios.post(API_ENDPOINTS.meterExceptions, payload);
 			setData(response.data);
 		} catch (err) {
 			if (!isAutoRefresh) setError("โหลดข้อมูลสถานะมิเตอร์ไม่สำเร็จ");
