@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import axios from "axios";
 import Papa from "papaparse";
-import API_URL, { API_ENDPOINTS } from './config/api';
+import API_URL, { API_ENDPOINTS } from "./config/api";
 import { Search, Loader2, CheckCircle2, AlertCircle, Database, FileSpreadsheet, List, ChevronRight, RefreshCw, BarChart3, Copy, Check, Clock, Activity, Zap, TrendingUp } from "lucide-react";
 
 function App() {
@@ -14,11 +14,29 @@ function App() {
 	const [error, setError] = useState(null);
 	const [copied, setCopied] = useState(false);
 	const [countdown, setCountdown] = useState(60);
+	const [isDebouncing, setIsDebouncing] = useState(false);
 
 	const stateRef = useRef({ selectedDate, billingList });
+	const abortControllerRef = useRef(null); // เก็บ AbortController
+	const debounceTimerRef = useRef(null); // เก็บ timer สำหรับ debounce
+
 	useEffect(() => {
 		stateRef.current = { selectedDate, billingList };
 	}, [selectedDate, billingList]);
+
+	// Cleanup on unmount
+	useEffect(() => {
+		return () => {
+			// ยกเลิก request ที่ค้างอยู่เมื่อ component unmount
+			if (abortControllerRef.current) {
+				abortControllerRef.current.abort();
+			}
+			// clear debounce timer
+			if (debounceTimerRef.current) {
+				clearTimeout(debounceTimerRef.current);
+			}
+		};
+	}, []);
 
 	// 1. โหลด Billing Dates ครั้งแรก
 	useEffect(() => {
@@ -41,7 +59,7 @@ function App() {
 			const matchingBilling = billingList.find((b) => b.BillingDate === tomorrowBilling);
 
 			if (matchingBilling) {
-				selectBilling(matchingBilling.BillingDate, matchingBilling.UniqueMeters);
+				handleSelectBilling(matchingBilling.BillingDate, matchingBilling.UniqueMeters);
 			}
 		}
 	}, [billingList]);
@@ -61,7 +79,7 @@ function App() {
 			if (currentSelected) {
 				const currentBilling = currentList.find((b) => b.BillingDate === currentSelected);
 				const total = currentBilling ? currentBilling.UniqueMeters : 0;
-				selectBilling(currentSelected, total, true);
+				handleSelectBilling(currentSelected, total, true);
 			}
 			setCountdown(60);
 		}
@@ -79,49 +97,82 @@ function App() {
 		}
 	};
 
-	const selectBilling = async (billingDate, uniqueCount, isAutoRefresh = false) => {
+	const handleSelectBilling = (billingDate, uniqueCount, isAutoRefresh = false) => {
+		// ยกเลิก debounce timer เก่า (ถ้ามี)
+		if (debounceTimerRef.current) {
+			clearTimeout(debounceTimerRef.current);
+		}
+
+		// ยกเลิก request เก่า (ถ้ามี)
+		if (abortControllerRef.current) {
+			abortControllerRef.current.abort();
+		}
+
+		// ถ้าไม่ใช่ auto-refresh ให้ clear data และ reset countdown
 		if (!isAutoRefresh) {
 			setData([]);
 			setCountdown(60);
-			setLoading(true);
-		} else {
-			setLoading(true);
 		}
+
+		// แสดง loading ทันทีเมื่อเลือก (ไม่ว่าจะ auto-refresh หรือไม่)
+		setLoading(true);
+		setIsDebouncing(true); // บอกว่ากำลังรอ debounce
 
 		setSelectedDate(billingDate);
 		setTotalInBilling(uniqueCount);
 
-		const year = parseInt(billingDate.substring(0, 4));
-		const month = parseInt(billingDate.substring(4, 6)) - 1;
-		const day = parseInt(billingDate.substring(6, 8));
-		const dateObj = new Date(year, month, day);
+		// Debounce 2000ms (2 วินาที) - รอให้ผู้ใช้หยุดกดก่อนจะ fetch
+		// loading จะแสดงต่อเนื่องตลอดเวลาที่รอ
+		debounceTimerRef.current = setTimeout(async () => {
+			setIsDebouncing(false); // หยุดรอ debounce แล้ว เริ่ม fetch
+			const year = parseInt(billingDate.substring(0, 4));
+			const month = parseInt(billingDate.substring(4, 6)) - 1;
+			const day = parseInt(billingDate.substring(6, 8));
+			const dateObj = new Date(year, month, day);
 
-		const formatDate = (d) => {
-			const y = d.getFullYear();
-			const m = String(d.getMonth() + 1).padStart(2, "0");
-			const dd = String(d.getDate()).padStart(2, "0");
-			return `${y}-${m}-${dd}`;
-		};
+			const formatDate = (d) => {
+				const y = d.getFullYear();
+				const m = String(d.getMonth() + 1).padStart(2, "0");
+				const dd = String(d.getDate()).padStart(2, "0");
+				return `${y}-${m}-${dd}`;
+			};
 
-		const startObj = new Date(dateObj);
-		startObj.setDate(dateObj.getDate() - 2);
-		const endObj = new Date(dateObj);
-		endObj.setDate(dateObj.getDate() - 1);
+			const startObj = new Date(dateObj);
+			startObj.setDate(dateObj.getDate() - 2);
+			const endObj = new Date(dateObj);
+			endObj.setDate(dateObj.getDate() - 1);
 
-		const payload = {
-			billingDate: billingDate,
-			startTarget: `${formatDate(startObj)} 00:00`,
-			endTarget: `${formatDate(endObj)} 23:59`,
-		};
+			const payload = {
+				billingDate: billingDate,
+				startTarget: `${formatDate(startObj)} 00:00`,
+				endTarget: `${formatDate(endObj)} 23:59`,
+			};
 
-		try {
-			const response = await axios.post(API_ENDPOINTS.meterExceptions, payload);
-			setData(response.data);
-		} catch (err) {
-			if (!isAutoRefresh) setError("โหลดข้อมูลสถานะมิเตอร์ไม่สำเร็จ");
-		} finally {
-			setLoading(false);
-		}
+			try {
+				// สร้าง AbortController ใหม่สำหรับ request นี้
+				abortControllerRef.current = new AbortController();
+
+				const response = await axios.post(API_ENDPOINTS.meterExceptions, payload, {
+					signal: abortControllerRef.current.signal,
+				});
+
+				setData(response.data);
+				setLoading(false); // ปิด loading เมื่อสำเร็จ
+			} catch (err) {
+				// ไม่แสดง error ถ้าเป็นการยกเลิก request
+				if (err.name === "CanceledError" || err.code === "ERR_CANCELED") {
+					console.log("Request was cancelled");
+					// ไม่ปิด loading เมื่อ abort เพราะจะมี request ใหม่ตามมา
+				} else {
+					if (!isAutoRefresh) {
+						setError("โหลดข้อมูลสถานะมิเตอร์ไม่สำเร็จ");
+					}
+					setLoading(false); // ปิด loading เมื่อเกิด error จริงๆ
+				}
+			} finally {
+				abortControllerRef.current = null;
+			}
+		}, 2000); // debounce 2 วินาที - รอให้ผู้ใช้หยุดกดก่อนจะ fetch (loading จะแสดงตลอดเวลาที่รอ)
 	};
 
 	const copyMeterIDs = () => {
@@ -234,7 +285,7 @@ function App() {
 									return (
 										<div
 											key={item.BillingDate}
-											onClick={() => isClickable && selectBilling(item.BillingDate, item.UniqueMeters)}
+											onClick={() => isClickable && handleSelectBilling(item.BillingDate, item.UniqueMeters)}
 											className={`
 												transition-all duration-300 border-b border-slate-100 last:border-b-0
 												${
@@ -417,7 +468,8 @@ function App() {
 								{loading && data.length === 0 ? (
 									<div className="flex flex-col items-center justify-center py-20">
 										<Loader2 className="animate-spin text-blue-600 mb-4" size={48} />
-										<span className="text-slate-600 font-bold text-sm uppercase tracking-wider animate-pulse">กำลังโหลดข้อมูล...</span>
+										<span className="text-slate-600 font-bold text-sm uppercase tracking-wider animate-pulse">{isDebouncing ? "รอสักครู่..." : "กำลังโหลดข้อมูล..."}</span>
+										{isDebouncing && <span className="text-slate-400 text-xs mt-2">กรุณารอให้หยุดเลือกก่อนโหลดข้อมูล</span>}
 									</div>
 								) : data.length === 0 ? (
 									<div className="flex flex-col items-center justify-center py-20 text-slate-400">
